@@ -54,11 +54,11 @@ public class RoutingService {
 					int c1 = Math.min(Math.max(sTile[1], tTile[1]) + 1, gs - 1);
 					Set<String> tiles = new HashSet<>();
 					for (int rr = r0; rr <= r1; rr++) for (int cc = c0; cc <= c1; cc++) tiles.add(String.format("tile_%d_%d", rr, cc));
-					CompressedGraph sub = store.assembleGraphForTiles(tiles);
+					CompressedGraph sub = store.assembleGraphForTiles(tiles, graph);
 					if (sub.nodeCount() > 0) graph = sub; // use assembled subgraph for routing
 				}
 			} catch (Exception e) {
-				log.debug("Tile-based assembly failed, falling back to full graph: {}", e.getMessage());
+				log.debug("Tile-based assembly failed, falling back to full graph: {}", e.getMessage(), e);
 			}
 
 			// helper: resolve chunks dir similar to GraphPreprocessor/StartupConfig
@@ -169,21 +169,30 @@ public class RoutingService {
 	private VehicleProfile resolveVehicleProfile(VehicleProfile req) {
 
 		// 1. Default-Profil laden
+		log.debug("Resolving vehicle profile, request name={}", req == null ? null : req.getName());
 		VehicleProfile base = vehicleProfileService
-				.getProfile(req == null || req.getName() == null ? "car" : req.getName());
+			.getProfile(req == null || req.getName() == null ? "car" : req.getName());
+		log.debug("Loaded base vehicle profile: {} (maxSpeed={}, ignoreOneWay={})",
+			base.getName(), base.getMaxSpeed(), base.getIgnoreOneWay());
 
 		if (req == null)
 			return base;
 
 		// 2. Primitive Werte überschreiben
-		if (req.getMaxSpeed() != null)
+		if (req.getMaxSpeed() != null) {
+			log.debug("Overriding maxSpeed: {} -> {}", base.getMaxSpeed(), req.getMaxSpeed());
 			base.setMaxSpeed(req.getMaxSpeed());
+		}
 
-		if (req.getHeuristicWeight() != null)
+		if (req.getHeuristicWeight() != null) {
+			log.debug("Overriding heuristicWeight: {} -> {}", base.getHeuristicWeight(), req.getHeuristicWeight());
 			base.setHeuristicWeight(req.getHeuristicWeight());
+		}
 
-		if (req.getIgnoreOneWay() != null)
+		if (req.getIgnoreOneWay() != null) {
+			log.debug("Overriding ignoreOneWay: {} -> {}", base.getIgnoreOneWay(), req.getIgnoreOneWay());
 			base.setIgnoreOneWay(req.getIgnoreOneWay());
+		}
 
 		// 3. Access merge or override
 		if (req.getAccess() != null) {
@@ -198,6 +207,7 @@ public class RoutingService {
 			        && !custom.isHgv() && !custom.isBus() && !custom.isTaxi()
 			        && !custom.isEmergency() && !custom.isDelivery() && !custom.isAgricultural();
 			if (allFalse) {
+				log.debug("Replacing access profile with custom (all false)");
 				base.setAccess(custom);
 			} else {
 				AccessProfile merged = new AccessProfile();
@@ -216,6 +226,7 @@ public class RoutingService {
 
 		// 4. Way multipliers mergen
 		if (req.getWayMultipliers() != null) {
+			log.debug("Merging way multipliers: overrides={}", req.getWayMultipliers());
 			Map<String, Double> merged = new HashMap<>(base.getWayMultipliers());
 			merged.putAll(req.getWayMultipliers()); // nur überschreiben, was gesetzt wurde
 			base.setWayMultipliers(merged);
@@ -223,6 +234,7 @@ public class RoutingService {
 
 		// 5. Tag weights mergen
 		if (req.getTagWeights() != null) {
+			log.debug("Merging tag weights: overrides={}", req.getTagWeights());
 			Map<String, Double> merged = new HashMap<>(base.getTagWeights());
 			merged.putAll(req.getTagWeights());
 			base.setTagWeights(merged);
@@ -230,11 +242,12 @@ public class RoutingService {
 
 		// 6. Blocked tags mergen
 		if (req.getBlockedTags() != null) {
+			log.debug("Merging blocked tags: overrides={}", req.getBlockedTags());
 			Set<String> merged = new HashSet<>(base.getBlockedTags());
 			merged.addAll(req.getBlockedTags());
 			base.setBlockedTags(new ArrayList<>(merged));
 		}
-
+		log.debug("Resolved vehicle profile: {} (maxSpeed={}, ignoreOneWay={})", base.getName(), base.getMaxSpeed(), base.getIgnoreOneWay());
 		return base;
 	}
 

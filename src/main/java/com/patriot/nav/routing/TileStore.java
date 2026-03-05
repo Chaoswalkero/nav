@@ -15,9 +15,25 @@ public class TileStore {
     public TileStore(File baseDir) throws IOException {
         this.baseDir = baseDir;
         File meta = new File(baseDir, "metadata.properties");
-        if (!meta.exists()) throw new IOException("Tile metadata not found: " + meta.getAbsolutePath());
         Properties p = new Properties();
-        try (FileInputStream in = new FileInputStream(meta)) { p.load(in); }
+        boolean loaded = false;
+        if (meta.exists()) {
+            try (FileInputStream in = new FileInputStream(meta)) { p.load(in); loaded = true; }
+            catch (IOException ignored) {}
+        }
+
+        // GraphPreprocessor now may write hierarchy metadata to 'hierarchy.properties'
+        if (!loaded || p.getProperty("minLat") == null) {
+            File hierMeta = new File(baseDir, "hierarchy.properties");
+            if (hierMeta.exists()) {
+                try (FileInputStream in = new FileInputStream(hierMeta)) { p.load(in); loaded = true; }
+                catch (IOException ignored) {}
+            }
+        }
+
+        if (!loaded || p.getProperty("minLat") == null)
+            throw new IOException("Tile metadata not found or incomplete in: " + baseDir.getAbsolutePath());
+
         minLat = Double.parseDouble(p.getProperty("minLat"));
         maxLat = Double.parseDouble(p.getProperty("maxLat"));
         minLon = Double.parseDouble(p.getProperty("minLon"));
@@ -36,6 +52,10 @@ public class TileStore {
     }
 
     public CompressedGraph assembleGraphForTiles(Set<String> tiles) throws IOException {
+        return assembleGraphForTiles(tiles, null);
+    }
+
+    public CompressedGraph assembleGraphForTiles(Set<String> tiles, CompressedGraph fullGraph) throws IOException {
         // mapping from global node id to local index
         IntMap globalToLocal = new IntMap();
         List<Integer> globalIds = new ArrayList<>();
@@ -146,12 +166,43 @@ public class TileStore {
                         edges.add(new int[]{fromLocal, toLocal});
                         weights.add(w);
                         flags.add(f);
-                        highwayType.add((byte)0);
-                        distance.add(0f);
-                        speed.add(0f);
-                        wayType.add("");
-                        tags.add(null);
-                        oneWay.add(false);
+                        // try to copy metadata from full graph if available
+                        if (fullGraph != null) {
+                            // find matching edge in full graph
+                            int matched = -1;
+                            int e = fullGraph.firstEdge(fromGlobal);
+                            while (e != -1) {
+                                if (fullGraph.edgeTo(e) == toGlobal) {
+                                    // weight match is a helpful heuristic
+                                    if (Math.abs(fullGraph.weight(e) - w) < 1e-3f) { matched = e; break; }
+                                    if (matched == -1) matched = e; // remember first candidate
+                                }
+                                e = fullGraph.edgeNext(e);
+                            }
+                            if (matched != -1) {
+                                highwayType.add(fullGraph.highwayType(matched));
+                                distance.add(fullGraph.distance(matched));
+                                speed.add(fullGraph.speed(matched));
+                                String wt = fullGraph.wayType(matched);
+                                wayType.add(wt == null ? "" : wt);
+                                tags.add(fullGraph.tags(matched));
+                                oneWay.add(fullGraph.oneWay(matched));
+                            } else {
+                                highwayType.add((byte)0);
+                                distance.add(0f);
+                                speed.add(0f);
+                                wayType.add("");
+                                tags.add(null);
+                                oneWay.add(false);
+                            }
+                        } else {
+                            highwayType.add((byte)0);
+                            distance.add(0f);
+                            speed.add(0f);
+                            wayType.add("");
+                            tags.add(null);
+                            oneWay.add(false);
+                        }
                     }
             }
         }

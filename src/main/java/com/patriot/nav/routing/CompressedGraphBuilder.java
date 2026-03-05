@@ -76,7 +76,27 @@ public class CompressedGraphBuilder {
     public static CompressedGraph buildFromPbf(String pbfPath) throws Exception {
         log.info("Building compressed graph from PBF: {}", pbfPath);
 
-        LongOpenHashSet usedNodeIds = new LongOpenHashSet();
+        // Holder für temporäre Sammlungen, damit innere Klassen Felder modifizieren können
+        final class Holder {
+            LongOpenHashSet usedNodeIds = new LongOpenHashSet();
+
+            LongArrayList nodeOsmIds;
+            DoubleArrayList nodeLats;
+            DoubleArrayList nodeLons;
+            Long2IntOpenHashMap osmIdToIndex;
+
+            IntArrayList edgeFromList;
+            IntArrayList edgeToList;
+            FloatArrayList edgeWeightList;
+            FloatArrayList edgeDistanceList;
+            FloatArrayList edgeSpeedList;
+            IntArrayList edgeFlagsList;
+            ByteArrayList edgeHighwayTypeList;
+            ObjectArrayList<String> edgeWayTypeList;
+            ObjectArrayList<Map<String,String>> edgeTagsList;
+            BooleanArrayList edgeOneWayList;
+        }
+        final Holder h = new Holder();
 
         // 1. Pass: Sammle alle Nodes, die zu Straßen gehören
         Sink waySink = new Sink() {
@@ -86,7 +106,7 @@ public class CompressedGraphBuilder {
                 if (e instanceof Way way) {
                     for (Tag t : way.getTags()) {
                         if ("highway".equals(t.getKey())) {
-                            way.getWayNodes().forEach(wn -> usedNodeIds.add(wn.getNodeId()));
+                            way.getWayNodes().forEach(wn -> h.usedNodeIds.add(wn.getNodeId()));
                             break;
                         }
                     }
@@ -101,26 +121,26 @@ public class CompressedGraphBuilder {
         reader1.setSink(waySink);
         reader1.run();
 
-        log.info("Collected {} street nodes", usedNodeIds.size());
+        log.info("Collected {} street nodes", h.usedNodeIds.size());
 
         // primitive lists for nodes
-        LongArrayList nodeOsmIds = new LongArrayList();
-        DoubleArrayList nodeLats = new DoubleArrayList();
-        DoubleArrayList nodeLons = new DoubleArrayList();
-        Long2IntOpenHashMap osmIdToIndex = new Long2IntOpenHashMap();
-        osmIdToIndex.defaultReturnValue(-1);
+        h.nodeOsmIds = new LongArrayList();
+        h.nodeLats = new DoubleArrayList();
+        h.nodeLons = new DoubleArrayList();
+        h.osmIdToIndex = new Long2IntOpenHashMap();
+        h.osmIdToIndex.defaultReturnValue(-1);
 
         // primitive lists for edges
-        IntArrayList edgeFromList = new IntArrayList();
-        IntArrayList edgeToList = new IntArrayList();
-        FloatArrayList edgeWeightList = new FloatArrayList();
-        FloatArrayList edgeDistanceList = new FloatArrayList();
-        FloatArrayList edgeSpeedList = new FloatArrayList();
-        IntArrayList edgeFlagsList = new IntArrayList();
-        ByteArrayList edgeHighwayTypeList = new ByteArrayList();
-        ObjectArrayList<String> edgeWayTypeList = new ObjectArrayList<>();
-        ObjectArrayList<Map<String,String>> edgeTagsList = new ObjectArrayList<>();
-        BooleanArrayList edgeOneWayList = new BooleanArrayList();
+        h.edgeFromList = new IntArrayList();
+        h.edgeToList = new IntArrayList();
+        h.edgeWeightList = new FloatArrayList();
+        h.edgeDistanceList = new FloatArrayList();
+        h.edgeSpeedList = new FloatArrayList();
+        h.edgeFlagsList = new IntArrayList();
+        h.edgeHighwayTypeList = new ByteArrayList();
+        h.edgeWayTypeList = new ObjectArrayList<>();
+        h.edgeTagsList = new ObjectArrayList<>();
+        h.edgeOneWayList = new BooleanArrayList();
 
         // 2. Pass: Baue Nodes + Edges
         Sink sink = new Sink() {
@@ -131,12 +151,12 @@ public class CompressedGraphBuilder {
 
                 // --- NODE ---
                 if (e instanceof Node node) {
-                    if (!usedNodeIds.contains(node.getId())) return;
-                    int idx = nodeOsmIds.size();
-                    nodeOsmIds.add(node.getId());
-                    nodeLats.add(node.getLatitude());
-                    nodeLons.add(node.getLongitude());
-                    osmIdToIndex.put(node.getId(), idx);
+                    if (!h.usedNodeIds.contains(node.getId())) return;
+                    int idx = h.nodeOsmIds.size();
+                    h.nodeOsmIds.add(node.getId());
+                    h.nodeLats.add(node.getLatitude());
+                    h.nodeLons.add(node.getLongitude());
+                    h.osmIdToIndex.put(node.getId(), idx);
                 }
 
                 // --- WAY ---
@@ -250,14 +270,14 @@ public class CompressedGraphBuilder {
                         long fromId = nodes.get(i).getNodeId();
                         long toId = nodes.get(i + 1).getNodeId();
 
-                        int fromIdx = osmIdToIndex.get(fromId);
-                        int toIdx = osmIdToIndex.get(toId);
+                        int fromIdx = h.osmIdToIndex.get(fromId);
+                        int toIdx = h.osmIdToIndex.get(toId);
                         if (fromIdx == -1 || toIdx == -1) continue;
 
-                        double fromLat = nodeLats.getDouble(fromIdx);
-                        double fromLon = nodeLons.getDouble(fromIdx);
-                        double toLat = nodeLats.getDouble(toIdx);
-                        double toLon = nodeLons.getDouble(toIdx);
+                        double fromLat = h.nodeLats.getDouble(fromIdx);
+                        double fromLon = h.nodeLons.getDouble(fromIdx);
+                        double toLat = h.nodeLats.getDouble(toIdx);
+                        double toLon = h.nodeLons.getDouble(toIdx);
 
                         float dist = (float) distanceMeters(fromLat, fromLon, toLat, toLon);
                         // recalculated weight using updated speed
@@ -267,29 +287,29 @@ public class CompressedGraphBuilder {
 
                         if (forward) {
                             int flags = baseFlags | EdgeFlags.DIR_FORWARD;
-                            edgeFromList.add(fromIdx);
-                            edgeToList.add(toIdx);
-                            edgeWeightList.add(timeSec);
-                            edgeDistanceList.add(dist);
-                            edgeSpeedList.add(baseSpeedKmh);
-                            edgeFlagsList.add(flags);
-                            edgeHighwayTypeList.add(hwType);
-                            edgeWayTypeList.add(highway);
-                            edgeTagsList.add(allTags);
-                            edgeOneWayList.add(isOneWay);
+                            h.edgeFromList.add(fromIdx);
+                            h.edgeToList.add(toIdx);
+                            h.edgeWeightList.add(timeSec);
+                            h.edgeDistanceList.add(dist);
+                            h.edgeSpeedList.add(baseSpeedKmh);
+                            h.edgeFlagsList.add(flags);
+                            h.edgeHighwayTypeList.add(hwType);
+                            h.edgeWayTypeList.add(highway);
+                            h.edgeTagsList.add(allTags);
+                            h.edgeOneWayList.add(isOneWay);
                         }
                         if (backward) {
                             int flags = baseFlags | EdgeFlags.DIR_BACKWARD;
-                            edgeFromList.add(toIdx);
-                            edgeToList.add(fromIdx);
-                            edgeWeightList.add(timeSec);
-                            edgeDistanceList.add(dist);
-                            edgeSpeedList.add(baseSpeedKmh);
-                            edgeFlagsList.add(flags);
-                            edgeHighwayTypeList.add(hwType);
-                            edgeWayTypeList.add(highway);
-                            edgeTagsList.add(allTags);
-                            edgeOneWayList.add(isOneWay);
+                            h.edgeFromList.add(toIdx);
+                            h.edgeToList.add(fromIdx);
+                            h.edgeWeightList.add(timeSec);
+                            h.edgeDistanceList.add(dist);
+                            h.edgeSpeedList.add(baseSpeedKmh);
+                            h.edgeFlagsList.add(flags);
+                            h.edgeHighwayTypeList.add(hwType);
+                            h.edgeWayTypeList.add(highway);
+                            h.edgeTagsList.add(allTags);
+                            h.edgeOneWayList.add(isOneWay);
                         }
                     }
                 }
@@ -304,11 +324,11 @@ public class CompressedGraphBuilder {
         reader2.setSink(sink);
         reader2.run();
 
-        int nodeCount = nodeOsmIds.size();
-        int edgeCount = edgeFromList.size();
+        int nodeCount = h.nodeOsmIds.size();
+        int edgeCount = h.edgeFromList.size();
 
         // free first-pass set - not needed anymore (helps reduce peak heap usage)
-        usedNodeIds = null;
+        h.usedNodeIds = null;
 
         int[] lat = new int[nodeCount];
         int[] lon = new int[nodeCount];
@@ -329,45 +349,44 @@ public class CompressedGraphBuilder {
         boolean[] oneWay = new boolean[edgeCount];
 
         for (int i = 0; i < nodeCount; i++) {
-            lat[i] = (int) Math.round(nodeLats.getDouble(i) * 1e6);
-            lon[i] = (int) Math.round(nodeLons.getDouble(i) * 1e6);
+            lat[i] = (int) Math.round(h.nodeLats.getDouble(i) * 1e6);
+            lon[i] = (int) Math.round(h.nodeLons.getDouble(i) * 1e6);
         }
 
         for (int i = 0; i < edgeCount; i++) {
-            int from = edgeFromList.getInt(i);
-            int to = edgeToList.getInt(i);
+            int from = h.edgeFromList.getInt(i);
+            int to = h.edgeToList.getInt(i);
 
             edgeTo[i] = to;
             edgeNext[i] = firstEdge[from];
             firstEdge[from] = i;
 
-            weight[i] = edgeWeightList.getFloat(i);
-            flags[i] = edgeFlagsList.getInt(i);
-            highwayType[i] = edgeHighwayTypeList.getByte(i);
+            weight[i] = h.edgeWeightList.getFloat(i);
+            flags[i] = h.edgeFlagsList.getInt(i);
+            highwayType[i] = h.edgeHighwayTypeList.getByte(i);
 
-            distance[i] = edgeDistanceList.getFloat(i);
-            speed[i] = edgeSpeedList.getFloat(i);
-            wayType[i] = edgeWayTypeList.get(i);
-            tags[i] = edgeTagsList.get(i);
-            oneWay[i] = edgeOneWayList.getBoolean(i);
+            distance[i] = h.edgeDistanceList.getFloat(i);
+            speed[i] = h.edgeSpeedList.getFloat(i);
+            wayType[i] = h.edgeWayTypeList.get(i);
+            tags[i] = h.edgeTagsList.get(i);
+            oneWay[i] = h.edgeOneWayList.getBoolean(i);
         }
-
         // drop large temporary lists to allow GC reclaiming memory before returning
-        nodeOsmIds = null;
-        nodeLats = null;
-        nodeLons = null;
-        osmIdToIndex = null;
+        h.nodeOsmIds = null;
+        h.nodeLats = null;
+        h.nodeLons = null;
+        h.osmIdToIndex = null;
 
-        edgeFromList = null;
-        edgeToList = null;
-        edgeWeightList = null;
-        edgeDistanceList = null;
-        edgeSpeedList = null;
-        edgeFlagsList = null;
-        edgeHighwayTypeList = null;
-        edgeWayTypeList = null;
-        edgeTagsList = null;
-        edgeOneWayList = null;
+        h.edgeFromList = null;
+        h.edgeToList = null;
+        h.edgeWeightList = null;
+        h.edgeDistanceList = null;
+        h.edgeSpeedList = null;
+        h.edgeFlagsList = null;
+        h.edgeHighwayTypeList = null;
+        h.edgeWayTypeList = null;
+        h.edgeTagsList = null;
+        h.edgeOneWayList = null;
 
         log.info("Compressed graph built: {} street nodes, {} edges", nodeCount, edgeCount);
 
