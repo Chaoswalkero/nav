@@ -1,0 +1,41 @@
+{
+  "name": "emergency",
+  "max_speed": 150,
+  "heuristic_weight": 1.0,
+  "ignore_one_way": true,
+
+  "access": {
+    "motorVehicle": true,
+    "bicycle": false,
+    "foot": false,
+    "hgv": false,
+    "bus": false,
+    "taxi": false,
+    "emergency": true,
+    "delivery": false,
+    "agricultural": false
+  },
+
+  "way_multipliers": {
+    "motorway": 0.5,
+    "trunk": 0.6,
+    "primary": 0.7,
+    "secondary": 0.8,
+    "tertiary": 0.9,
+    "residential": 1.0,
+    "service": 1.2,
+    "footway": 2.0,
+    "path": 2.5,
+    "cycleway": 2.0,
+    "track": 1.8
+  },
+
+  "tag_weights": {
+    "traffic_signals=yes": 0.8,
+    "surface=gravel": 1.2,
+    "surface=dirt": 1.5,
+    "surface=grass": 2.0
+  },
+
+  "blocked_tags": []
+}

@@ -1,0 +1,36 @@
+{
+  "name": "foot",
+  "max_speed": 6,
+  "heuristic_weight": 1.0,
+  "ignore_one_way": true,
+
+  "access": {
+    "motorVehicle": false,
+    "bicycle": false,
+    "foot": true,
+    "hgv": false,
+    "bus": false,
+    "taxi": false,
+    "emergency": false,
+    "delivery": false,
+    "agricultural": false
+  },
+
+  "way_multipliers": {
+    "footway": 0.6,
+    "path": 0.8,
+    "residential": 1.2,
+    "service": 1.3,
+    "steps": 1.5
+  },
+
+  "tag_weights": {
+    "surface=gravel": 1.1,
+    "surface=dirt": 1.2,
+    "surface=grass": 1.3
+  },
+
+  "blocked_tags": [
+    "motor_vehicle=only"
+  ]
+}

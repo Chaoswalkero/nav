@@ -1,0 +1,50 @@
+{
+  "name": "motorcycle",
+  "max_speed": 120,
+  "heuristic_weight": 1.1,
+  "ignore_one_way": false,
+
+  "access": {
+    "motorVehicle": true,
+    "bicycle": false,
+    "foot": false,
+    "hgv": false,
+    "bus": false,
+    "taxi": false,
+    "emergency": false,
+    "delivery": false,
+    "agricultural": false
+  },
+
+  "way_multipliers": {
+    "motorway": 0.7,
+    "trunk": 0.8,
+    "primary": 0.9,
+    "secondary": 1.0,
+    "tertiary": 1.1,
+    "unclassified": 1.0,
+    "residential": 1.0,
+    "service": 1.2,
+    "track": 1.4,
+    "path": 1.8,
+    "cycleway": 2.5,
+    "footway": 3.0
+  },
+
+  "tag_weights": {
+    "surface=asphalt": 0.9,
+    "surface=paved": 1.0,
+    "surface=gravel": 1.4,
+    "surface=dirt": 1.8,
+    "surface=grass": 2.5,
+    "incline=up": 1.2,
+    "traffic_signals=yes": 1.05
+  },
+
+  "blocked_tags": [
+    "motorcycle=no",
+    "access=no",
+    "foot=only",
+    "bicycle=only"
+  ]
+}
