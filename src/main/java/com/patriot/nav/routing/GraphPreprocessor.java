@@ -6,6 +6,7 @@ import java.io.*;
 import java.util.Properties;
 import java.util.ArrayList;
 import java.util.List;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 
 @Slf4j
 public class GraphPreprocessor {
@@ -97,6 +98,9 @@ public class GraphPreprocessor {
                     double la = g.lat(i); double lo = g.lon(i);
                     if (la >= la0 && la < la1 && lo >= lo0 && lo < lo1) nodes.add(i);
                 }
+                // build a fast lookup set for membership tests to avoid O(n) list.contains calls
+                IntOpenHashSet nodeSet = new IntOpenHashSet(nodes.size());
+                for (int id : nodes) nodeSet.add(id);
 
                 // write node index file
                 File tileIdx = new File(hier, String.format("tile_%d_%d.idx", r, c));
@@ -122,7 +126,7 @@ public class GraphPreprocessor {
                     int e = g.firstEdge(nid);
                     while (e != -1) {
                         int to = g.edgeTo(e);
-                        if (!nodes.contains(to)) ghostIds.add(to);
+                        if (!nodeSet.contains(to)) ghostIds.add(to);
                         e = g.edgeNext(e);
                     }
                 }
@@ -166,7 +170,7 @@ public class GraphPreprocessor {
         }
 
         // write hierarchy metadata (bounds + grid)
-        File meta = new File(baseDir, "metadata.properties");
+        File meta = new File(baseDir, "hierarchy.properties");
         try (FileOutputStream fos = new FileOutputStream(meta)) {
             Properties p = new Properties();
             p.setProperty("minLat", String.valueOf(minLat));

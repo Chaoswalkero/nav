@@ -307,6 +307,9 @@ public class CompressedGraphBuilder {
         int nodeCount = nodeOsmIds.size();
         int edgeCount = edgeFromList.size();
 
+        // free first-pass set - not needed anymore (helps reduce peak heap usage)
+        usedNodeIds = null;
+
         int[] lat = new int[nodeCount];
         int[] lon = new int[nodeCount];
         int[] firstEdge = new int[nodeCount];
@@ -348,6 +351,23 @@ public class CompressedGraphBuilder {
             tags[i] = edgeTagsList.get(i);
             oneWay[i] = edgeOneWayList.getBoolean(i);
         }
+
+        // drop large temporary lists to allow GC reclaiming memory before returning
+        nodeOsmIds = null;
+        nodeLats = null;
+        nodeLons = null;
+        osmIdToIndex = null;
+
+        edgeFromList = null;
+        edgeToList = null;
+        edgeWeightList = null;
+        edgeDistanceList = null;
+        edgeSpeedList = null;
+        edgeFlagsList = null;
+        edgeHighwayTypeList = null;
+        edgeWayTypeList = null;
+        edgeTagsList = null;
+        edgeOneWayList = null;
 
         log.info("Compressed graph built: {} street nodes, {} edges", nodeCount, edgeCount);
 
