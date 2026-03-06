@@ -4,6 +4,8 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+
+
 ### STS ###
 .apt_generated
 .classpath
@@ -34,3 +36,6 @@ build/
 .vs/
 
 *.osm.pbf
+
+
+/graph-chunks/

@@ -64,7 +64,7 @@ public class GraphPreprocessor {
             }
             if (needCreate) createTilesFromPbf(pbfPath, chunksDir, 4, pbfLast);
         } catch (Throwable t) {
-            log.warn("Streaming tile creation failed (falling back to in-memory build): {}", t.getMessage());
+            log.warn("Streaming tile creation failed (falling back to in-memory build)", t);
         }
 
         log.info("Building compressed graph from PBF (may require more memory): {}", pbfPath);
@@ -159,23 +159,51 @@ public class GraphPreprocessor {
             }
         }
 
-        // Open DB with transactions enabled and close-on-shutdown to ensure cleaner state.
-        DB db = DBMaker.fileDB(dbFile).fileMmapEnableIfSupported().transactionEnable().closeOnJvmShutdown().make();
-        log.info("createTilesFromPbf: opening MapDB file={}", dbFile.getAbsolutePath());
-        HTreeMap<Long, Boolean> usedNodes = db.hashMap("usedNodes", Serializer.LONG, Serializer.BOOLEAN).createOrOpen();
+        // Open separate DB files for usedNodes, nodeCoords and globalIndex to reduce contention.
+        DB usedDb = DBMaker.fileDB(new File(baseDir, "used_nodes.db")).fileMmapEnableIfSupported().transactionEnable().closeOnJvmShutdown().make();
+        DB coordDb = DBMaker.fileDB(new File(baseDir, "node_coords.db")).fileMmapEnableIfSupported().transactionEnable().closeOnJvmShutdown().make();
+        DB idxDb = DBMaker.fileDB(new File(baseDir, "global_index.db")).fileMmapEnableIfSupported().transactionEnable().closeOnJvmShutdown().make();
+        log.info("createTilesFromPbf: opened MapDB files in {}", baseDir.getAbsolutePath());
+        HTreeMap<Long, Boolean> usedNodes = usedDb.hashMap("usedNodes", Serializer.LONG, Serializer.BOOLEAN).createOrOpen();
         // store coordinates as integer microdegrees to avoid String parsing and reduce IO
-        HTreeMap<Long, Integer> nodeLat = db.hashMap("nodeLat", Serializer.LONG, Serializer.INTEGER).createOrOpen();
-        HTreeMap<Long, Integer> nodeLon = db.hashMap("nodeLon", Serializer.LONG, Serializer.INTEGER).createOrOpen();
+        HTreeMap<Long, Integer> nodeLat = coordDb.hashMap("nodeLat", Serializer.LONG, Serializer.INTEGER).createOrOpen();
+        HTreeMap<Long, Integer> nodeLon = coordDb.hashMap("nodeLon", Serializer.LONG, Serializer.INTEGER).createOrOpen();
 
-        // PASS 1: scan ways and mark used node ids (ways with highway tag)
+        // Progress counters and reporter
+        java.util.concurrent.atomic.AtomicLong wayProcessed = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong usedIdsWritten = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong nodeProcessed = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong nodeCoordsStored = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong waysProcessedPass3 = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong edgesWritten = new java.util.concurrent.atomic.AtomicLong(0);
+
+        java.util.concurrent.ScheduledExecutorService reporter = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        reporter.scheduleAtFixedRate(() -> {
+            try {
+                log.info("createTilesFromPbf: progress - waysSeen={}, usedIds={}, nodesSeen={}, nodeCoords={}, waysPass3={}, edgesWritten={}",
+                        wayProcessed.get(), usedIdsWritten.get(), nodeProcessed.get(), nodeCoordsStored.get(), waysProcessedPass3.get(), edgesWritten.get());
+            } catch (Throwable t) { /* ignore */ }
+        }, 15, 15, java.util.concurrent.TimeUnit.SECONDS);
+
+        // PASS 1: scan ways and write used node ids to a temp binary file (avoid heavy DB writes while Osmosis runs)
+        File usedIdsFile = new File(baseDir, "used_node_ids.bin");
+        DataOutputStream usedIdsOut = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(usedIdsFile)));
         RunnableSource wayReader = new PbfReader(new File(pbfPath), 1);
         wayReader.setSink(new Sink() {
             @Override public void process(EntityContainer container) {
                 var e = container.getEntity();
                 if (e instanceof Way way) {
+                    wayProcessed.incrementAndGet();
                     for (var t : way.getTags()) {
                         if ("highway".equals(t.getKey())) {
-                            way.getWayNodes().forEach(wn -> usedNodes.put(wn.getNodeId(), Boolean.TRUE));
+                            for (var wn : way.getWayNodes()) {
+                                try {
+                                    usedIdsOut.writeLong(wn.getNodeId());
+                                    usedIdsWritten.incrementAndGet();
+                                } catch (IOException ioe) {
+                                    throw new RuntimeException(ioe);
+                                }
+                            }
                             break;
                         }
                     }
@@ -186,7 +214,18 @@ public class GraphPreprocessor {
             @Override public void close() {}
         });
         wayReader.run();
-        db.commit();
+        usedIdsOut.close();
+
+        // load unique ids from temp file into MapDB (single-threaded pass)
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(usedIdsFile)))) {
+            while (true) {
+                try {
+                    long id = in.readLong();
+                    usedNodes.put(id, Boolean.TRUE);
+                } catch (EOFException eof) { break; }
+            }
+        }
+        usedDb.commit();
         log.info("createTilesFromPbf: PASS1 complete - marked {} used nodes (on-disk) and committed", usedNodes.size());
 
         // PASS 2: scan nodes and store coordinates only for used nodes
@@ -196,11 +235,13 @@ public class GraphPreprocessor {
             @Override public void process(EntityContainer container) {
                 var e = container.getEntity();
                 if (e instanceof Node node) {
+                    nodeProcessed.incrementAndGet();
                     if (usedNodes.containsKey(node.getId())) {
                         int latI = (int) Math.round(node.getLatitude() * 1e6);
                         int lonI = (int) Math.round(node.getLongitude() * 1e6);
                         nodeLat.put(node.getId(), latI);
                         nodeLon.put(node.getId(), lonI);
+                        nodeCoordsStored.incrementAndGet();
                         if (node.getLatitude() < minMax[0]) minMax[0] = node.getLatitude();
                         if (node.getLatitude() > minMax[1]) minMax[1] = node.getLatitude();
                         if (node.getLongitude() < minMax[2]) minMax[2] = node.getLongitude();
@@ -213,12 +254,14 @@ public class GraphPreprocessor {
             @Override public void close() {}
         });
         nodeReader.run();
-        db.commit();
+        coordDb.commit();
         log.info("createTilesFromPbf: PASS2 complete - stored {} node coords (on-disk) and committed", nodeLat.size());
         log.info("createTilesFromPbf: bounds minLat={}, maxLat={}, minLon={}, maxLon={}", minMax[0], minMax[1], minMax[2], minMax[3]);
 
         if (nodeLat.size() == 0) {
-            db.close();
+            try { usedDb.close(); } catch (Exception ignored) {}
+            try { coordDb.close(); } catch (Exception ignored) {}
+            try { idxDb.close(); } catch (Exception ignored) {}
             return;
         }
 
@@ -233,19 +276,19 @@ public class GraphPreprocessor {
         // Prepare per-tile collections on disk (temporary in-memory sets of global ids per tile)
         List<Set<Integer>> tileNodes = new ArrayList<>(gridSize * gridSize);
         List<Set<Integer>> tileGhosts = new ArrayList<>(gridSize * gridSize);
-        List<DataOutputStream> tileEdgeStreams = new ArrayList<>();
-            for (int i = 0; i < gridSize * gridSize; i++) {
-                tileNodes.add(new HashSet<>());
-                tileGhosts.add(new HashSet<>());
-                File ef = new File(hier, String.format("tile_%d_%d.edges", i / gridSize, i % gridSize));
-                DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(ef)));
-                tileEdgeStreams.add(dos);
-                // we'll write count later; use placeholder
-            }
+        for (int i = 0; i < gridSize * gridSize; i++) {
+            tileNodes.add(new HashSet<>());
+            tileGhosts.add(new HashSet<>());
+        }
+
+        // parts directory for per-thread partial edge files
+        File partsDir = new File(hier, "parts");
+        if (!partsDir.exists()) partsDir.mkdirs();
+        java.util.concurrent.ConcurrentHashMap<Long, java.util.Map<Integer, DataOutputStream>> partStreams = new java.util.concurrent.ConcurrentHashMap<>();
 
         // We need a global numbering for node indices; assign sequential IDs for nodes encountered
         // Create an on-disk map nodeId -> globalIndex
-        HTreeMap<Long, Integer> globalIndex = db.hashMap("globalIndex", Serializer.LONG, Serializer.INTEGER).createOrOpen();
+        HTreeMap<Long, Integer> globalIndex = idxDb.hashMap("globalIndex", Serializer.LONG, Serializer.INTEGER).createOrOpen();
         java.util.concurrent.atomic.AtomicInteger nextGlobal = new java.util.concurrent.atomic.AtomicInteger(0);
 
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
@@ -262,6 +305,7 @@ public class GraphPreprocessor {
                 exec.submit(() -> {
                     try {
                         var nodes = way.getWayNodes();
+                        waysProcessedPass3.incrementAndGet();
                         for (int i = 0; i < nodes.size() - 1; i++) {
                             long fromId = nodes.get(i).getNodeId();
                             long toId = nodes.get(i + 1).getNodeId();
@@ -292,13 +336,19 @@ public class GraphPreprocessor {
                             tileNodes.get(fromTileIdx).add(fg);
                             if (fromTileIdx != toTileIdx) tileGhosts.get(fromTileIdx).add(tg);
 
-                            DataOutputStream dos = tileEdgeStreams.get(fromTileIdx);
-                            synchronized (dos) {
-                                dos.writeInt(fg);
-                                dos.writeInt(tg);
-                                dos.writeFloat(0f);
-                                dos.writeInt(0);
+                            long tid = Thread.currentThread().getId();
+                            java.util.Map<Integer, DataOutputStream> local = partStreams.computeIfAbsent(tid, k -> new java.util.HashMap<>());
+                            DataOutputStream dos = local.get(fromTileIdx);
+                            if (dos == null) {
+                                File part = new File(partsDir, String.format("tile_%d_%d.part%d", fromTileR, fromTileC, tid));
+                                dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(part, true)));
+                                local.put(fromTileIdx, dos);
                             }
+                            dos.writeInt(fg);
+                            dos.writeInt(tg);
+                            dos.writeFloat(0f);
+                            dos.writeInt(0);
+                            edgesWritten.incrementAndGet();
                         }
                     } catch (RuntimeException ex) {
                         throw ex;
@@ -324,11 +374,16 @@ public class GraphPreprocessor {
             exec.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        db.commit();
+        // commit global index
+        idxDb.commit();
         log.info("createTilesFromPbf: PASS3 complete - created {} global index entries and committed", globalIndex.size());
 
-        // close edge streams
-        for (DataOutputStream dos : tileEdgeStreams) dos.close();
+        // close per-thread part streams
+        for (java.util.Map<Integer, DataOutputStream> m : partStreams.values()) {
+            for (DataOutputStream dos : m.values()) {
+                try { dos.close(); } catch (Exception ignored) {}
+            }
+        }
 
         // write out per-tile files
         for (int r = 0; r < gridSize; r++) {
@@ -373,25 +428,31 @@ public class GraphPreprocessor {
                     }
                 }
 
-                // rewrite .edges with counts at front
+                // merge per-thread part files into final edges file with header
                 File edgesFile = new File(hier, prefix + ".edges");
-                // read content and count entries (each entry is 4+4+4+4 = 16 bytes)
-                long entries = edgesFile.exists() ? edgesFile.length() / 16 : 0;
-                log.info("createTilesFromPbf: tile {}_{}, nodes={}, ghosts={}, rawEdgeEntries={}", r, c, nodesSet.size(), ghosts.size(), entries);
+                File[] parts = partsDir.listFiles((d, name) -> name.startsWith(prefix + ".part"));
+                if (parts == null) parts = new File[0];
+                long entries = 0;
+                for (File f : parts) entries += f.length() / 16;
+                log.info("createTilesFromPbf: tile {}_{}, nodes={}, ghosts={}, rawPartEntries={}", r, c, nodesSet.size(), ghosts.size(), entries);
                 if (entries > 0) {
                     File tmp = new File(hier, prefix + ".edges.tmp");
-                    try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(edgesFile)));
-                         DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(tmp)))) {
-                        out.writeInt((int)entries);
-                        byte[] buf = new byte[4096];
-                        int read;
-                        while ((read = in.read(buf)) > 0) out.write(buf, 0, read);
+                    try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(tmp)))) {
+                        out.writeInt((int) entries);
+                        byte[] buf = new byte[8192];
+                        for (File p : parts) {
+                            if (!p.exists()) continue;
+                            try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(p)))) {
+                                int read;
+                                while ((read = in.read(buf)) > 0) out.write(buf, 0, read);
+                            }
+                            // delete part
+                            try { p.delete(); } catch (Exception ignored) {}
+                        }
                     }
-                    // replace
-                    if (!edgesFile.delete()) throw new IOException("Could not replace edges file");
+                    if (edgesFile.exists() && !edgesFile.delete()) throw new IOException("Could not replace edges file");
                     if (!tmp.renameTo(edgesFile)) throw new IOException("Could not rename temp edges file");
                 } else {
-                    // write empty edges file
                     try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(edgesFile)))) {
                         out.writeInt(0);
                     }
@@ -423,9 +484,10 @@ public class GraphPreprocessor {
             log.warn("createTilesFromPbf: could not write tmp_nodes.meta: {}", e.getMessage());
         }
 
-        // final commit & close
-        try { db.commit(); } catch (Exception ignored) {}
-        db.close();
+        // final close of DBs
+        try { usedDb.close(); } catch (Exception ignored) {}
+        try { coordDb.close(); } catch (Exception ignored) {}
+        try { idxDb.close(); } catch (Exception ignored) {}
     }
 
     private static File resolveChunksDir(String configured) {
