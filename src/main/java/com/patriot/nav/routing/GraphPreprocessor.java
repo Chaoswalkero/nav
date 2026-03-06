@@ -49,7 +49,20 @@ public class GraphPreprocessor {
 
         // Try to create hierarchy tiles using a disk-backed streaming approach
         try {
-            createTilesFromPbf(pbfPath, chunksDir, 4);
+            // skip streaming if hierarchy metadata exists and matches PBF timestamp
+            File hierMeta = new File(chunksDir, "hierarchy.properties");
+            boolean needCreate = true;
+            if (hierMeta.exists()) {
+                Properties hp = new Properties();
+                try (FileInputStream in = new FileInputStream(hierMeta)) { hp.load(in); }
+                String val = hp.getProperty("pbf.lastModified", "0");
+                long prev = Long.parseLong(val);
+                if (prev == pbfLast) {
+                    needCreate = false;
+                    log.info("Hierarchy tiles up-to-date, skipping streaming tile creation");
+                }
+            }
+            if (needCreate) createTilesFromPbf(pbfPath, chunksDir, 4, pbfLast);
         } catch (Throwable t) {
             log.warn("Streaming tile creation failed (falling back to in-memory build): {}", t.getMessage());
         }
@@ -84,17 +97,44 @@ public class GraphPreprocessor {
      * all nodes/ids in memory. Produces the same files under <baseDir>/hierarchy as
      * `saveHierarchyTiles` would.
      */
-    private static void createTilesFromPbf(String pbfPath, File baseDir, int gridSize) throws Exception {
+    private static void createTilesFromPbf(String pbfPath, File baseDir, int gridSize, long pbfLast) throws Exception {
         File dbFile = new File(baseDir, "tmp_nodes.db");
         dbFile.getParentFile().mkdirs();
 
-        // If a previous tmp DB exists, check if it's stale (older than PBF) or corrupted.
+        // If a previous tmp DB exists, check if it's stale (based on PBF metadata) or corrupted.
         File pbfFile = new File(pbfPath);
-        long pbfLast = pbfFile.exists() ? pbfFile.lastModified() : 0L;
+        pbfLast = pbfFile.exists() ? pbfFile.lastModified() : 0L;
+        long pbfSize = pbfFile.exists() ? pbfFile.length() : 0L;
+
+        File dbMeta = new File(baseDir, "tmp_nodes.meta");
         if (dbFile.exists()) {
-            // stale check: tmp DB older than PBF -> remove and start fresh
-            if (dbFile.lastModified() < pbfLast) {
-                log.info("createTilesFromPbf: existing tmp DB is older than PBF — removing {}", dbFile.getAbsolutePath());
+            boolean remove = false;
+            if (dbMeta.exists()) {
+                try (FileInputStream in = new FileInputStream(dbMeta)) {
+                    Properties mp = new Properties();
+                    mp.load(in);
+                    String recordedPath = mp.getProperty("pbf.path", "");
+                    long recordedLast = Long.parseLong(mp.getProperty("pbf.lastModified", "0"));
+                    long recordedSize = Long.parseLong(mp.getProperty("pbf.size", "0"));
+                    if (!recordedPath.equals(pbfPath) || recordedLast != pbfLast || recordedSize != pbfSize) {
+                        log.info("createTilesFromPbf: tmp DB metadata differs from current PBF; will recreate DB");
+                        remove = true;
+                    } else {
+                        log.info("createTilesFromPbf: tmp DB metadata matches PBF; attempting to reuse DB");
+                    }
+                } catch (Exception e) {
+                    log.warn("createTilesFromPbf: could not read tmp_nodes.meta: {} — will recreate DB", e.getMessage());
+                    remove = true;
+                }
+            } else {
+                // no meta file -> fall back to previous timestamp check
+                if (dbFile.lastModified() < pbfLast) {
+                    log.info("createTilesFromPbf: existing tmp DB is older than PBF — removing {}", dbFile.getAbsolutePath());
+                    remove = true;
+                }
+            }
+
+            if (remove) {
                 File parent = dbFile.getParentFile();
                 String prefix = dbFile.getName();
                 File[] siblings = parent.listFiles((d, name) -> name.startsWith(prefix));
@@ -123,7 +163,9 @@ public class GraphPreprocessor {
         DB db = DBMaker.fileDB(dbFile).fileMmapEnableIfSupported().transactionEnable().closeOnJvmShutdown().make();
         log.info("createTilesFromPbf: opening MapDB file={}", dbFile.getAbsolutePath());
         HTreeMap<Long, Boolean> usedNodes = db.hashMap("usedNodes", Serializer.LONG, Serializer.BOOLEAN).createOrOpen();
-        HTreeMap<Long, String> nodeData = db.hashMap("nodeData", Serializer.LONG, Serializer.STRING).createOrOpen();
+        // store coordinates as integer microdegrees to avoid String parsing and reduce IO
+        HTreeMap<Long, Integer> nodeLat = db.hashMap("nodeLat", Serializer.LONG, Serializer.INTEGER).createOrOpen();
+        HTreeMap<Long, Integer> nodeLon = db.hashMap("nodeLon", Serializer.LONG, Serializer.INTEGER).createOrOpen();
 
         // PASS 1: scan ways and mark used node ids (ways with highway tag)
         RunnableSource wayReader = new PbfReader(new File(pbfPath), 1);
@@ -155,7 +197,10 @@ public class GraphPreprocessor {
                 var e = container.getEntity();
                 if (e instanceof Node node) {
                     if (usedNodes.containsKey(node.getId())) {
-                        nodeData.put(node.getId(), node.getLatitude() + "," + node.getLongitude());
+                        int latI = (int) Math.round(node.getLatitude() * 1e6);
+                        int lonI = (int) Math.round(node.getLongitude() * 1e6);
+                        nodeLat.put(node.getId(), latI);
+                        nodeLon.put(node.getId(), lonI);
                         if (node.getLatitude() < minMax[0]) minMax[0] = node.getLatitude();
                         if (node.getLatitude() > minMax[1]) minMax[1] = node.getLatitude();
                         if (node.getLongitude() < minMax[2]) minMax[2] = node.getLongitude();
@@ -169,10 +214,10 @@ public class GraphPreprocessor {
         });
         nodeReader.run();
         db.commit();
-        log.info("createTilesFromPbf: PASS2 complete - stored {} node coords (on-disk) and committed", nodeData.size());
+        log.info("createTilesFromPbf: PASS2 complete - stored {} node coords (on-disk) and committed", nodeLat.size());
         log.info("createTilesFromPbf: bounds minLat={}, maxLat={}, minLon={}, maxLon={}", minMax[0], minMax[1], minMax[2], minMax[3]);
 
-        if (nodeData.size() == 0) {
+        if (nodeLat.size() == 0) {
             db.close();
             return;
         }
@@ -189,22 +234,20 @@ public class GraphPreprocessor {
         List<Set<Integer>> tileNodes = new ArrayList<>(gridSize * gridSize);
         List<Set<Integer>> tileGhosts = new ArrayList<>(gridSize * gridSize);
         List<DataOutputStream> tileEdgeStreams = new ArrayList<>();
-        for (int i = 0; i < gridSize * gridSize; i++) {
-            tileNodes.add(new HashSet<>());
-            tileGhosts.add(new HashSet<>());
-            File ef = new File(hier, String.format("tile_%d_%d.edges", i / gridSize, i % gridSize));
-            DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(ef)));
-            tileEdgeStreams.add(dos);
-            // we'll write count later; use placeholder
-        }
+            for (int i = 0; i < gridSize * gridSize; i++) {
+                tileNodes.add(new HashSet<>());
+                tileGhosts.add(new HashSet<>());
+                File ef = new File(hier, String.format("tile_%d_%d.edges", i / gridSize, i % gridSize));
+                DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(ef)));
+                tileEdgeStreams.add(dos);
+                // we'll write count later; use placeholder
+            }
 
         // We need a global numbering for node indices; assign sequential IDs for nodes encountered
         // Create an on-disk map nodeId -> globalIndex
         HTreeMap<Long, Integer> globalIndex = db.hashMap("globalIndex", Serializer.LONG, Serializer.INTEGER).createOrOpen();
         java.util.concurrent.atomic.AtomicInteger nextGlobal = new java.util.concurrent.atomic.AtomicInteger(0);
 
-        // PASS 3: scan ways again, create edges and assign nodes to tiles
-        // Parallelize processing of ways: submit tasks to thread pool to process individual ways
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
         java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newFixedThreadPool(threads);
         RunnableSource wayReader2 = new PbfReader(new File(pbfPath), 1);
@@ -212,27 +255,25 @@ public class GraphPreprocessor {
             @Override public void process(EntityContainer container) {
                 var e = container.getEntity();
                 if (!(e instanceof Way way)) return;
-                // check highway tag quickly
                 boolean isHighway = false;
                 for (var t : way.getTags()) if ("highway".equals(t.getKey())) { isHighway = true; break; }
                 if (!isHighway) return;
 
-                // submit processing of this way to thread pool
                 exec.submit(() -> {
                     try {
                         var nodes = way.getWayNodes();
                         for (int i = 0; i < nodes.size() - 1; i++) {
                             long fromId = nodes.get(i).getNodeId();
                             long toId = nodes.get(i + 1).getNodeId();
-                            String fromCoord = nodeData.get(fromId);
-                            String toCoord = nodeData.get(toId);
-                            if (fromCoord == null || toCoord == null) continue;
-                            String[] fa = fromCoord.split(",");
-                            String[] ta = toCoord.split(",");
-                            double flat = Double.parseDouble(fa[0]);
-                            double flon = Double.parseDouble(fa[1]);
-                            double tlat = Double.parseDouble(ta[0]);
-                            double tlon = Double.parseDouble(ta[1]);
+                            Integer flatI = nodeLat.get(fromId);
+                            Integer flonI = nodeLon.get(fromId);
+                            Integer tlatI = nodeLat.get(toId);
+                            Integer tlonI = nodeLon.get(toId);
+                            if (flatI == null || flonI == null || tlatI == null || tlonI == null) continue;
+                            double flat = flatI / 1e6;
+                            double flon = flonI / 1e6;
+                            double tlat = tlatI / 1e6;
+                            double tlon = tlonI / 1e6;
 
                             int fromTileR = (int) Math.floor((flat - minLat) / latStep);
                             int fromTileC = (int) Math.floor((flon - minLon) / lonStep);
@@ -245,15 +286,12 @@ public class GraphPreprocessor {
                             int fromTileIdx = fromTileR * gridSize + fromTileC;
                             int toTileIdx = toTileR * gridSize + toTileC;
 
-                            // assign global indices atomically using computeIfAbsent
                             Integer fg = globalIndex.computeIfAbsent(fromId, k -> nextGlobal.getAndIncrement());
                             Integer tg = globalIndex.computeIfAbsent(toId, k -> nextGlobal.getAndIncrement());
 
-                            // add nodes to respective tile node sets
                             tileNodes.get(fromTileIdx).add(fg);
                             if (fromTileIdx != toTileIdx) tileGhosts.get(fromTileIdx).add(tg);
 
-                            // write edge: synchronized on per-stream object to allow concurrent writes
                             DataOutputStream dos = tileEdgeStreams.get(fromTileIdx);
                             synchronized (dos) {
                                 dos.writeInt(fg);
@@ -306,10 +344,10 @@ public class GraphPreprocessor {
                         // MapDB doesn't provide inverse; do a linear scan of keys in globalIndex (on-disk) - acceptable for moderate counts
                         long osmId = -1L;
                         for (Map.Entry<Long, Integer> e : globalIndex.entrySet()) if (e.getValue() == gid) { osmId = e.getKey(); break; }
-                        String coord = nodeData.get(osmId);
-                        String[] a = coord.split(",");
-                        double lat = Double.parseDouble(a[0]);
-                        double lon = Double.parseDouble(a[1]);
+                        Integer latI = nodeLat.get(osmId);
+                        Integer lonI = nodeLon.get(osmId);
+                        double lat = latI == null ? 0.0 : latI / 1e6;
+                        double lon = lonI == null ? 0.0 : lonI / 1e6;
                         out.writeInt(gid);
                         out.writeDouble(lat);
                         out.writeDouble(lon);
@@ -324,10 +362,10 @@ public class GraphPreprocessor {
                         for (int gid : ghosts) {
                             long osmId = -1L;
                             for (Map.Entry<Long, Integer> e : globalIndex.entrySet()) if (e.getValue() == gid) { osmId = e.getKey(); break; }
-                            String coord = nodeData.get(osmId);
-                            String[] a = coord.split(",");
-                            double lat = Double.parseDouble(a[0]);
-                            double lon = Double.parseDouble(a[1]);
+                            Integer latI = nodeLat.get(osmId);
+                            Integer lonI = nodeLon.get(osmId);
+                            double lat = latI == null ? 0.0 : latI / 1e6;
+                            double lon = lonI == null ? 0.0 : lonI / 1e6;
                             out.writeInt(gid);
                             out.writeDouble(lat);
                             out.writeDouble(lon);
@@ -370,7 +408,19 @@ public class GraphPreprocessor {
             p.setProperty("minLon", String.valueOf(minLon));
             p.setProperty("maxLon", String.valueOf(maxLon));
             p.setProperty("gridSize", String.valueOf(gridSize));
+            p.setProperty("pbf.lastModified", String.valueOf(pbfLast));
             p.store(fos, "Hierarchy metadata (streamed)");
+        }
+
+        // write tmp DB metadata so we can validate reuse on subsequent runs
+        try (FileOutputStream mf = new FileOutputStream(dbMeta)) {
+            Properties mp = new Properties();
+            mp.setProperty("pbf.path", pbfPath);
+            mp.setProperty("pbf.size", String.valueOf(pbfSize));
+            mp.setProperty("pbf.lastModified", String.valueOf(pbfLast));
+            mp.store(mf, "Tmp nodes DB metadata");
+        } catch (Exception e) {
+            log.warn("createTilesFromPbf: could not write tmp_nodes.meta: {}", e.getMessage());
         }
 
         // final commit & close
