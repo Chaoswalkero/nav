@@ -1,0 +1,68 @@
+Punkte
+(max. 10 Pkte.) Faktor Ergebnis
+Ergebnis Projektarbeit, Dokukumentation & Präsentation (max.100 Punkte) 0,00
+IHK-Schlüssel bei 100 Punkten
+2 0
+0 Punkte: Das Arbeitsergebnis weist fachlich nicht mehr vertretbare Mängel auf, oder es wurde
+keine Prüfungsleistung erbracht.
+3 Punkte: Das Arbeitsergebnis weist größere Mängel auf.
+Note:____________
+IT-Projekt
+Klasse 12
+Bewertungsbogen
+Bewertungsschlüssel:
+10 Punkte: Keine Mängel, das Arbeitsergebnis ist einwandfrei.
+9 Punkte: Das Arbeitsergebnis weist sehr geringe Mängel auf.
+8 Punkte: Das Arbeitsergebnis weist geringe Mängel auf.
+[optional→] sonstige Diagramme
+Umfang der Arbeit
+7 Punkte: Das Arbeitsergebnis weist Mängel auf.
+5 Punkte: Das Arbeitsergebnis weist gerade noch vertretbare Mängel auf.
+Gesamtkonzept
+(UML-)Diagramme
+Ausdruck, Satzbau, Stil
+Rechtschreibung
+Reflexion der Projektarbeit und Ausblick
+Fachliche Qualität (fachlich richtig/begründet)
+Konzeption und Diagramme:
+Seitenlayout, Design, Gestaltung
+Übersichtlichkeit
+[optional, falls Anlagen vorhanden→] Anlagenverzeichnis
+Deckblatt & Inhaltsverzeichnis
+[optional, bei bestimmten Voraussetzungen→] Ist-Analyse
+Konzeption (mit Diagrammen)
+[optional→] • Deployment-, • Komponenten-, • Ganttdiagramm,etc.
+Zeiterfassung (für/während Durchführung & Doku des Projekts)
+Quellenangaben & Eigenständigkeitserklärung
+Präsen-
+tation
+Planung und Durchführung (Struktorierung/Aufteilung/Einteilung)
+Präsentation und Fachgespräch
+fachlich richtig und begründet
+[optional, bei bestimmten Voraussetzungen→] Ist-Analyse
+• Use-Case-Diagramm
+• Aktivitätsdiagramm
+• Klassendiagramm
+Hintergrundwissen
+3 0
+1 0
+1 0
+1 0
+Namen der Gruppenmitglieder:
+"Projektarbeit, Dokumentation & Präsentation"
+2 0
+Praxisbezogene und zielorientierte Arbeitsabläufe
+Fachlicher Inhalt
+Bewertungskriterien
+Gesamtgestaltung der Dokumentation
+ 
+Ist die Dokumentation formal vollständig?
+Seitenangaben (in Inhaltsverzeichnis und auf Seiten!)
+Wie ist der optische Eindruck?
+• Use-Case-Diagramm(e)
+Entspricht die sprachliche Gestaltung einer fachlichen Doku?
+• Aktivitätsdiagramm(e)
+• Klassendiagramm(e),
+
+-- 1 of 1 --
+

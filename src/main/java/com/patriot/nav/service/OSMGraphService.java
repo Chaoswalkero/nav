@@ -30,12 +30,34 @@ public class OSMGraphService {
 	public void initialize() throws Exception {
 		log.info("Initializing OSM Graph Service");
 		String[] pathInfo = new String[2];
-		String resolvedPath = resolvePbfPath(pbfPath, pathInfo);
+		resolvePbfPath(pbfPath, pathInfo);
 		File tempFile = pathInfo[1] != null ? new File(pathInfo[1]) : null;
-		
 		try {
-			this.graph = com.patriot.nav.routing.GraphPreprocessor.loadOrPreprocess(resolvedPath, chunksPath);
-			log.info("Compressed graph loaded with {} nodes", graph.nodeCount());
+			File chunksDir = resolveChunksDir(chunksPath);
+			File cache = new File(chunksDir, "graph.bin");
+			if (cache.exists()) {
+				log.info("Loading compressed graph from {}", cache.getAbsolutePath());
+				this.graph = com.patriot.nav.routing.CompressedGraph.loadFromFile(cache);
+				log.info("Compressed graph loaded with {} nodes", graph.nodeCount());
+			} else {
+				// Fallback: if no prebuilt cache exists but a PBF path was resolved (e.g. tests using classpath resource),
+				// build graph from PBF on-the-fly (do not persist cache here).
+				String pbfResolved = pathInfo[0];
+				if (pbfResolved != null) {
+					File pbfFile = new File(pbfResolved);
+					if (pbfFile.exists()) {
+						log.info("No graph cache found; building graph from PBF: {}", pbfResolved);
+						this.graph = com.patriot.nav.routing.CompressedGraphBuilder.buildFromPbf(pbfResolved);
+						log.info("Compressed graph built with {} nodes", graph.nodeCount());
+					} else {
+						throw new IllegalStateException("Graph cache not found at: " + cache.getAbsolutePath()
+								+ ". No PBF available at: " + pbfResolved + ". Provide a prebuilt graph.bin in the graph-chunks directory.");
+					}
+				} else {
+					throw new IllegalStateException("Graph cache not found at: " + cache.getAbsolutePath()
+							+ ". GraphPreprocessor class has been removed; provide a prebuilt graph.bin in the graph-chunks directory.");
+				}
+			}
 		} finally {
 			// Cleanup temporäre OSM-Dateien nach dem Graphbau
 			if (tempFile != null && tempFile.exists()) {
@@ -51,6 +73,17 @@ public class OSMGraphService {
 					tempFile.deleteOnExit();
 				}
 			}
+		}
+	}
+
+	private File resolveChunksDir(String configured) {
+		if (configured != null && !configured.isBlank()) return new File(configured);
+		try {
+			File code = new File(com.patriot.nav.routing.CompressedGraphBuilder.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+			File dir = code.isDirectory() ? code : code.getParentFile();
+			return new File(dir, "graph-chunks");
+		} catch (Exception e) {
+			return new File("graph-chunks");
 		}
 	}
 

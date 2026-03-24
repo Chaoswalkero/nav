@@ -8,8 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.io.File;
-import com.patriot.nav.routing.TileStore;
 
 @Slf4j
 @Service
@@ -39,27 +37,7 @@ public class RoutingService {
 				return createErrorResponse("Graph not initialized");
 			}
 
-			// If tiles are available, assemble a subgraph for the source/target tiles to avoid loading full graph
-			try {
-				File chunksDir = resolveChunksDir();
-				File meta = new File(chunksDir, "metadata.properties");
-				if (meta.exists()) {
-					TileStore store = new TileStore(chunksDir);
-					int[] sTile = store.tileFor(request.getStartLat(), request.getStartLon());
-					int[] tTile = store.tileFor(request.getEndLat(), request.getEndLon());
-					int gs = store.getGridSize();
-					int r0 = Math.max(0, Math.min(sTile[0], tTile[0]) - 1);
-					int r1 = Math.min(Math.max(sTile[0], tTile[0]) + 1, gs - 1);
-					int c0 = Math.max(0, Math.min(sTile[1], tTile[1]) - 1);
-					int c1 = Math.min(Math.max(sTile[1], tTile[1]) + 1, gs - 1);
-					Set<String> tiles = new HashSet<>();
-					for (int rr = r0; rr <= r1; rr++) for (int cc = c0; cc <= c1; cc++) tiles.add(String.format("tile_%d_%d", rr, cc));
-					CompressedGraph sub = store.assembleGraphForTiles(tiles);
-					if (sub.nodeCount() > 0) graph = sub; // use assembled subgraph for routing
-				}
-			} catch (Exception e) {
-				log.debug("Tile-based assembly failed, falling back to full graph: {}", e.getMessage());
-			}
+			// TileStore-based assembly removed: use graph from OSMGraphService directly.
 
 			// helper: resolve chunks dir similar to GraphPreprocessor/StartupConfig
 
@@ -118,15 +96,7 @@ public class RoutingService {
 		}
 	}
 
-	private File resolveChunksDir() {
-		try {
-			File code = new File(com.patriot.nav.routing.CompressedGraphBuilder.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-			File dir = code.isDirectory() ? code : code.getParentFile();
-			return new File(dir, "graph-chunks");
-		} catch (Exception e) {
-			return new File("graph-chunks");
-		}
-	}
+	// resolveChunksDir removed — graph chunks handling is centralized in OSMGraphService
 
 	private List<RoutePoint> buildRoutePoints(int[] path, CompressedGraph graph) {
 		List<RoutePoint> points = new ArrayList<>();

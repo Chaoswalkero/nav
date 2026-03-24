@@ -32,53 +32,56 @@ public class StartupConfig {
     @PostConstruct
     public void initialize() {
         try {
-            // resolve chunks dir (same logic as GraphPreprocessor)
-            File chunksDir = resolveChunksDir(chunksPath);
-            if (!chunksDir.exists()) {
-                Files.createDirectories(chunksDir.toPath());
-                log.info("Created chunks directory: {}", chunksDir.getAbsolutePath());
-            }
-
             // ensure osm cache dir exists
             File cacheDir = new File(osmCacheDir);
             if (!cacheDir.exists()) {
                 Files.createDirectories(cacheDir.toPath());
                 log.info("Created OSM cache directory: {}", cacheDir.getAbsolutePath());
             }
+            // If a chunks path is configured, prepare runtime dirs and copy vehicle resources there.
+            if (chunksPath != null && !chunksPath.isBlank()) {
+                File chunksDir = resolveChunksDir(chunksPath);
+                if (!chunksDir.exists()) {
+                    Files.createDirectories(chunksDir.toPath());
+                    log.info("Created chunks directory: {}", chunksDir.getAbsolutePath());
+                }
 
-            // prepare runtime vehicles directory under chunksDir so API can write there
-            File vehiclesRuntimeDir = new File(chunksDir, "vehicles");
-            if (!vehiclesRuntimeDir.exists()) {
-                Files.createDirectories(vehiclesRuntimeDir.toPath());
-                log.info("Created runtime vehicles directory: {}", vehiclesRuntimeDir.getAbsolutePath());
-            }
+                // prepare runtime vehicles directory under chunksDir so API can write there
+                File vehiclesRuntimeDir = new File(chunksDir, "vehicles");
+                if (!vehiclesRuntimeDir.exists()) {
+                    Files.createDirectories(vehiclesRuntimeDir.toPath());
+                    log.info("Created runtime vehicles directory: {}", vehiclesRuntimeDir.getAbsolutePath());
+                }
 
-            // dynamically list vehicle resource files from classpath and copy them
-            List<String> vehicleResources = listClasspathResourceFiles("osm/vehicles");
-            for (String name : vehicleResources) {
-                File dest = new File(vehiclesRuntimeDir, name);
-                if (dest.exists()) continue; // don't overwrite
-                try {
-                    Resource r = new ClassPathResource("osm/vehicles/" + name);
-                    if (r.exists()) {
-                        try (InputStream in = r.getInputStream(); FileOutputStream out = new FileOutputStream(dest)) {
-                            in.transferTo(out);
+                // dynamically list vehicle resource files from classpath and copy them
+                List<String> vehicleResources = listClasspathResourceFiles("osm/vehicles");
+                for (String name : vehicleResources) {
+                    File dest = new File(vehiclesRuntimeDir, name);
+                    if (dest.exists()) continue; // don't overwrite
+                    try {
+                        Resource r = new ClassPathResource("osm/vehicles/" + name);
+                        if (r.exists()) {
+                            try (InputStream in = r.getInputStream(); FileOutputStream out = new FileOutputStream(dest)) {
+                                in.transferTo(out);
+                            }
+                            log.info("Copied default vehicle {} to {}", name, dest.getAbsolutePath());
                         }
-                        log.info("Copied default vehicle {} to {}", name, dest.getAbsolutePath());
+                    } catch (Exception ex) {
+                        log.warn("Could not copy default vehicle {}: {}", name, ex.getMessage());
                     }
-                } catch (Exception ex) {
-                    log.warn("Could not copy default vehicle {}: {}", name, ex.getMessage());
                 }
-            }
 
-            // create additional runtime dirs under chunksDir
-            String[] extraDirs = new String[]{"hierarchy","tiles","cache","tmp","logs"};
-            for (String d : extraDirs) {
-                File f = new File(chunksDir, d);
-                if (!f.exists()) {
-                    Files.createDirectories(f.toPath());
-                    log.info("Created directory: {}", f.getAbsolutePath());
+                // create additional runtime dirs under chunksDir
+                String[] extraDirs = new String[]{"hierarchy","tiles","cache","tmp","logs"};
+                for (String d : extraDirs) {
+                    File f = new File(chunksDir, d);
+                    if (!f.exists()) {
+                        Files.createDirectories(f.toPath());
+                        log.info("Created directory: {}", f.getAbsolutePath());
+                    }
                 }
+            } else {
+                log.info("Chunking disabled (graph.chunks.path not set); skipping chunks directory setup");
             }
 
             log.info("Application startup configuration completed");
